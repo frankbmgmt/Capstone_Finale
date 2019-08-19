@@ -1,0 +1,288 @@
+---
+title: "Class Work Together Example"
+author: "Francesco B."
+date: "8/18/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+This is a walk-thru led by Scott
+
+```{r}
+install.packages ('syuzhet')
+install.packages ('ranger')
+install.packages ('caret')
+install.packages ('tidyverse')
+install.packages ('tidytext')
+set.seed(123)
+#install.packages ('garson') Not abail for R version 3.6
+```
+
+```{r}
+library ('tidyverse')
+library ('syuzhet')
+library ('tidytext')
+library ('ranger')
+library ('caret')
+library ('nnet')
+library ('stringi')
+#library ('garson')
+set.seed(123)
+```
+
+## Load Data
+```{r}
+raw_song <- read_csv("https://foco-ds-portal-files.s3.amazonaws.com/songdata.csv")
+raw_genre = read_csv("https://foco-ds-portal-files.s3.amazonaws.com/Artists_Genre_Mapping.csv")
+#raw_genre = read_csv("Artists_Genre_Mapping.csv")
+
+raw_dat = raw_song %>% 
+  left_join(raw_genre, by = c('artist' = 'Band')) %>%
+# Reduce the number of genres.... Random Forest breaks
+  
+# Rename Genre Updated to genre
+  rename(genre = `Genre Updated`) %>%
+# Romove NAs  
+  filter(!is.na(genre)) %>%
+# Add index id
+  mutate(id = row_number()) %>%
+# Drop the link var
+select (-link)
+# Reduce the number of genres.... Random breaks
+
+# Downsize sample size
+dat = raw_dat %>%
+  sample_n(300)
+dat
+```
+
+## Wrangle Data
+## Manually identified words in genres
+#```{r}
+dat  %>%
+  mutate(sentiment = get_sentiment(text),
+          
+         wrd_hottie = str_detect(text, "hottie"),
+         wrd_gucci= str_detect(text, "gucci"),
+         wrd_nigga= str_detect(text, "nigga"),
+         wrd_bitch= str_detect(text, "bitch"),
+         wrd_fuck= str_detect(text, "fuck")) %>%
+  select(id, genre, sentiment, wrd_hottie, wrd_gucci)
+dat = dat                                                                  
+#```
+
+## Wrangle Data
+```{r}
+dat = dat %>%
+  mutate(sentiment = get_sentiment(text),
+         number_of_words = stri_count(text, regex="\\S+"),
+         number_of_letters = length(text),
+         avg_word_length = number_of_letters / number_of_words)
+         #wrd_love = str_detect(text, 'love')) #%>%
+  #select(id, genre, sentiment, 
+         #number_of_words, number_of_letters,avg_word_length,
+         #wrd_love)
+
+head(dat)
+```
+
+
+## EDA
+
+
+```{r}
+head(dat)
+```
+
+
+## Convert plot to mean sentiment
+```{r}
+dat %>%
+  filter(sentiment != 0) %>%
+   group_by(genre) %>%
+  summarize(mean_sentiment = mean(sentiment)) %>%
+  ggplot(aes(x = genre, y = mean_sentiment)) + 
+  geom_col() + 
+  coord_flip()
+```
+# Most genres have a positive sentiment.
+
+
+The most negative sentiment genres are:
+- Rap, Hip-Hop and Metal.
+
+The most positive sentiment genres are:
+- Religous
+- Disco
+- Easy-Listening
+- Rock&Roll
+
+## EDA
+```{r}
+dat %>%
+  ggplot(aes(x = sentiment, col = genre, fill = genre)) +
+  geom_density(alpha = 0.5)
+```
+All genres seem to have a normal distribution of sentiments  have a different mean and SD.
+
+## Do correlation plots of ones that look similar
+```{r}
+head(dat)
+```
+
+```{r}
+head(raw_dat)
+```
+# Programmatic identifying key words in genres
+```{r}
+text_dat_raw = raw_dat %>%
+  unnest_tokens(word, text) %>%
+
+  anti_join(stop_words, by = 'word') #%>%
+  head(text_dat_raw)
+  #mutate(word = str_extract(word, "[a-z']+")) %>%
+  #filter(word != 'br') %>%
+  #filter(word != 'movie') %>%
+  #filter(word != 'film')
+text_dat_grouped = text_dat_raw %>%
+  group_by(genre, id, word) %>%
+  summarize(n = 1) %>%
+  group_by(genre, word) %>%
+  summarize(n = n()) %>%
+  group_by(word) %>%
+  mutate(pct_of_total = n / sum(n)) %>%
+  ungroup() %>%
+  # Increase n below for fewer columns!
+  filter(n > 2000, 
+         pct_of_total > 0.1) %>% # must be in +70% favor of # one review type
+  select(word)
+text_dat_spread = text_dat_grouped %>% 
+  left_join(text_dat_raw, by = 'word') %>%
+  select(id, word) %>%
+  distinct(id, word) %>%
+  mutate(n = 10) %>%
+  spread(key = word, value = n)
+text_dat_spread
+```
+
+## Join dat & text_dat
+```{r}
+final_dat = dat %>%
+  left_join(text_dat_spread, by = 'id')
+final_dat[is.na(final_dat)] = 0
+head(final_dat)
+```
+
+
+
+
+## Build Model
+
+```{r}
+training_split = 0.75
+smp_size = floor(training_split * nrow(final_dat))
+dat_index = sample(seq_len(nrow(final_dat)), size = smp_size)
+dat_train = as.data.frame(final_dat[dat_index,])
+dat_test = as.data.frame(final_dat[-dat_index,])
+
+```
+
+```{r}
+ncol(dat_train)
+```
+
+
+```{r}
+dat_train$genre
+```
+
+
+```{r}
+unique (dat_train$genre)
+```
+
+
+```{r}
+train_control = trainControl(method = "oob")
+
+mod_rf = train(dat_train %>% select(-(genre)),
+            (dat_train$genre),
+            method = "ranger",
+            num.trees = 5,
+            importance = "impurity",
+            
+            trControl = train_control)
+
+predictions_rf = predict(mod_rf, dat_test)
+confusionMatrix(predictions_rf, as.factor(dat_test$genre))
+```
+
+```{r}
+mod_rf$finalModel %>%
+  # extract variable importance metrics
+  ranger::importance() %>%
+  # convert to a data frame
+  enframe(name = "variable", value = "varimp") %>%
+  top_n(n = 20, wt = varimp) %>%
+  # plot the metrics
+  ggplot(aes(x = fct_reorder(variable, varimp), y = varimp)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Token",
+       y = "Variable importance (higher is more important)")
+
+
+```
+
+# Using Neural Network Model
+```{r}
+library(MASS)
+```
+
+```{r}
+
+nnetModel <- train(dat_train, dat_train$genre,
+                 method = "nnet",
+                 preProcess = "range",
+                 tuneLength = 2,
+                 trace = FALSE,
+                 maxit = 100)
+predictions_rf = predict(nnetModel, dat_test)
+confusionMatrix(predictions_rf, as.factor(dat_test$genre))
+```
+```{r}
+#create a pretty color vector for the bar plot
+#cols<-colorRampPalette(c('lightgreen','lightblue'))(num.vars)
+ 
+#use the function on the model created above
+#par(mar=c(3,4,1,1),family='serif')
+#gar.fun('y',mod1,col=cols,ylab='Rel. importance',ylim=c(-1,1))
+garson(nnetModel,)
+```
+
+
+#```{r}
+nnetModel$finalModel %>%
+  # extract variable importance metrics
+  nnet::importance() %>%
+  # convert to a data frame
+  enframe(name = "variable", value = "varimp") %>%
+  top_n(n = 20, wt = varimp) %>%
+  # plot the metrics
+  ggplot(aes(x = fct_reorder(variable, varimp), y = varimp)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Token",
+       y = "Variable importance (higher is more important)")
+
+
+#```
