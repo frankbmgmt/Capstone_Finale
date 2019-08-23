@@ -1,13 +1,15 @@
 ---
 title: "Class Work Together Example"
 author: "Francesco B."
-date: "8/18/2019"
+date: "8/20/2019"
 output: html_document
 ---
 
 ```{r setup, include=FALSE, message=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+# FRANK, this is Scott, I did this!
 
 ## R Markdown
 
@@ -18,12 +20,12 @@ When you click the **Knit** button a document will be generated that includes bo
 This is a walk-thru led by Scott
 
 ```{r}
-install.packages ('syuzhet')
-install.packages ('ranger')
-install.packages ('caret')
-install.packages ('tidyverse')
-install.packages ('tidytext')
-set.seed(123)
+# install.packages ('syuzhet')
+# install.packages ('ranger')
+# install.packages ('caret')
+# install.packages ('tidyverse')
+# install.packages ('tidytext')
+# set.seed(123)
 #install.packages ('garson') Not abail for R version 3.6
 ```
 
@@ -42,8 +44,8 @@ set.seed(123)
 ## Load Data
 ```{r}
 raw_song <- read_csv("https://foco-ds-portal-files.s3.amazonaws.com/songdata.csv")
-raw_genre = read_csv("https://foco-ds-portal-files.s3.amazonaws.com/Artists_Genre_Mapping.csv")
-#raw_genre = read_csv("Artists_Genre_Mapping.csv")
+#raw_genre = read_csv("https://foco-ds-portal-files.s3.amazonaws.com/Artists_Genre_Mapping.csv")
+raw_genre = read_csv("Artists_Genre_Mapping.csv")
 
 raw_dat = raw_song %>% 
   left_join(raw_genre, by = c('artist' = 'Band')) %>%
@@ -59,10 +61,20 @@ raw_dat = raw_song %>%
 select (-link)
 # Reduce the number of genres.... Random breaks
 
-# Downsize sample size
-dat = raw_dat %>%
-  sample_n(300)
-dat
+enough_genres = raw_dat %>%
+  group_by(genre) %>%
+  count() %>%
+  filter(n > 400)
+
+raw_dat = raw_dat %>%
+  left_join(enough_genres, by = 'genre') %>%
+  filter(!is.na(n)) %>%
+  select(-n)
+
+#Downsize sample size
+raw_dat = raw_dat %>%
+ sample_n(24000)
+#raw_dat
 ```
 
 ## Wrangle Data
@@ -82,10 +94,10 @@ dat = dat
 
 ## Wrangle Data
 ```{r}
-dat = dat %>%
+dat = raw_dat %>%
   mutate(sentiment = get_sentiment(text),
          number_of_words = stri_count(text, regex="\\S+"),
-         number_of_letters = length(text),
+         number_of_letters = nchar(text),
          avg_word_length = number_of_letters / number_of_words)
          #wrd_love = str_detect(text, 'love')) #%>%
   #select(id, genre, sentiment, 
@@ -143,16 +155,38 @@ head(dat)
 head(raw_dat)
 ```
 # Programmatic identifying key words in genres
-```{r}
-text_dat_raw = raw_dat %>%
-  unnest_tokens(word, text) %>%
+Exceeded R's capacity when unnesting all 57,000 songs
+Need to break into 4 piece, unnest, and stitch back together
 
-  anti_join(stop_words, by = 'word') #%>%
-  head(text_dat_raw)
-  #mutate(word = str_extract(word, "[a-z']+")) %>%
-  #filter(word != 'br') %>%
-  #filter(word != 'movie') %>%
-  #filter(word != 'film')
+```{r}
+# Break text_dat_raw into 4 parts
+text_dat_raw_1 = raw_dat[1:10000,]
+text_dat_raw_2 = raw_dat[10001:20000,]
+text_dat_raw_3 = raw_dat[20001:30000,]
+text_dat_raw_4 = raw_dat[30001:nrow(raw_dat),]
+#Unnest all 4 parts and remove stop_words
+
+text_dat_raw_1 = text_dat_raw_1%>%
+unnest_tokens(word, text)
+
+text_dat_raw_2 = text_dat_raw_2%>%
+unnest_tokens(word, text)
+
+text_dat_raw_3 = text_dat_raw_3%>%
+unnest_tokens(word, text)
+
+text_dat_raw_4 = text_dat_raw_4%>%
+unnest_tokens(word, text)
+
+
+# Combine 4 parts back into 1
+text_dat_raw_1 = text_dat_raw_1 %>%
+  bind_rows(text_dat_raw_2) %>%
+  bind_rows(text_dat_raw_3) %>%
+  bind_rows(text_dat_raw_4)
+
+  text_dat_raw = text_dat_raw_1
+
 text_dat_grouped = text_dat_raw %>%
   group_by(genre, id, word) %>%
   summarize(n = 1) %>%
@@ -162,22 +196,27 @@ text_dat_grouped = text_dat_raw %>%
   mutate(pct_of_total = n / sum(n)) %>%
   ungroup() %>%
   # Increase n below for fewer columns!
-  filter(n > 2000, 
+  filter(n > 100, 
          pct_of_total > 0.1) %>% # must be in +70% favor of # one review type
   select(word)
+
 text_dat_spread = text_dat_grouped %>% 
   left_join(text_dat_raw, by = 'word') %>%
   select(id, word) %>%
   distinct(id, word) %>%
   mutate(n = 10) %>%
   spread(key = word, value = n)
+
 text_dat_spread
+
+
 ```
 
 ## Join dat & text_dat
 ```{r}
-final_dat = dat %>%
-  left_join(text_dat_spread, by = 'id')
+final_dat = dat %>% select(-song) %>% 
+  left_join(text_dat_spread, by = 'id') %>%
+  select(-text, -artist)
 final_dat[is.na(final_dat)] = 0
 head(final_dat)
 ```
@@ -187,13 +226,13 @@ head(final_dat)
 
 ## Build Model
 
+
 ```{r}
 training_split = 0.75
 smp_size = floor(training_split * nrow(final_dat))
 dat_index = sample(seq_len(nrow(final_dat)), size = smp_size)
 dat_train = as.data.frame(final_dat[dat_index,])
 dat_test = as.data.frame(final_dat[-dat_index,])
-
 ```
 
 ```{r}
@@ -202,32 +241,47 @@ ncol(dat_train)
 
 
 ```{r}
-dat_train$genre
-```
-
-
-```{r}
 unique (dat_train$genre)
 ```
-
-
 ```{r}
-train_control = trainControl(method = "oob")
+dat_train = dat_train %>%
+  select(-id)
 
-mod_rf = train(dat_train %>% select(-(genre)),
-            (dat_train$genre),
-            method = "ranger",
-            num.trees = 5,
-            importance = "impurity",
-            
-            trControl = train_control)
-
-predictions_rf = predict(mod_rf, dat_test)
-confusionMatrix(predictions_rf, as.factor(dat_test$genre))
 ```
 
 ```{r}
-mod_rf$finalModel %>%
+head(dat_train)
+```
+
+```{r}
+dat_test = dat_test %>%
+  select(-id)
+```
+
+```{r}
+head(dat_test)
+```
+
+#```
+
+```{r}
+
+train_control = trainControl(method = "cv")
+
+model_rf = train(dat_train %>% select(-genre),
+            dat_train$genre,
+            method = "ranger",
+            num.trees = 50,
+            importance = "impurity",
+            trControl = train_control)
+
+predictions_rf = predict(model_rf, dat_test)
+confusionMatrix(predictions_rf, as.factor(dat_test$genre))
+
+```
+
+```{r}
+model_rf$finalModel %>%
   # extract variable importance metrics
   ranger::importance() %>%
   # convert to a data frame
@@ -244,29 +298,25 @@ mod_rf$finalModel %>%
 ```
 
 # Using Neural Network Model
-```{r}
-library(MASS)
-```
-
-```{r}
-
-nnetModel <- train(dat_train, dat_train$genre,
-                 method = "nnet",
-                 preProcess = "range",
-                 tuneLength = 2,
-                 trace = FALSE,
-                 maxit = 100)
+#```{r}
+nnetMod <- train(dat_train %>% select(-genre), 
+                dat_train$genre,
+                  method = "nnet",
+                  preProcess = "range",
+                  tuneLength = 2,
+                  trace = FALSE,
+                  maxit = 100)
 predictions_rf = predict(nnetModel, dat_test)
 confusionMatrix(predictions_rf, as.factor(dat_test$genre))
-```
-```{r}
+#```
+#```{r}
 #create a pretty color vector for the bar plot
 #cols<-colorRampPalette(c('lightgreen','lightblue'))(num.vars)
  
 #use the function on the model created above
 #par(mar=c(3,4,1,1),family='serif')
 #gar.fun('y',mod1,col=cols,ylab='Rel. importance',ylim=c(-1,1))
-garson(nnetModel,)
+# garson(nnetModel,)
 ```
 
 
@@ -286,3 +336,8 @@ nnetModel$finalModel %>%
 
 
 #```
+
+```{r}
+saveRDS(model_rf, file = paste0('models/model_rf - ', Sys.time(), '.rds'))
+```
+
